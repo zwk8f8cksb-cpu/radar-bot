@@ -776,8 +776,34 @@ def write_pwa_files(site_dir: Path) -> None:
     (site_dir / "manifest.webmanifest").write_text(json.dumps(manifest, ensure_ascii=False, indent=2),
                                                    encoding="utf-8")
     (site_dir / "sw.js").write_text(SERVICE_WORKER, encoding="utf-8")
+    custom = _custom_icons(site_dir)
     for size in (180, 192, 512):
-        (site_dir / f"icon-{size}.png").write_bytes(radar_icon(size))
+        if not custom:
+            (site_dir / f"icon-{size}.png").write_bytes(radar_icon(size))
+
+
+def _custom_icons(site_dir: Path) -> bool:
+    """Si icon-source.png (ou .jpg) existe à la racine du dépôt, l'utilise pour les icônes."""
+    root = Path(__file__).parent
+    src = next((root / n for n in ("icon-source.png", "icon-source.jpg", "icon-source.jpeg")
+                if (root / n).exists()), None)
+    if not src:
+        return False
+    try:
+        from PIL import Image
+        img = Image.open(src).convert("RGBA")
+        side = min(img.size)                         # découpe carrée au centre
+        left, top = (img.width - side) // 2, (img.height - side) // 2
+        img = img.crop((left, top, left + side, top + side))
+        for size in (180, 192, 512):
+            bg = Image.new("RGBA", (size, size), (11, 18, 32, 255))   # fond sombre si transparence
+            bg.alpha_composite(img.resize((size, size), Image.LANCZOS))
+            bg.convert("RGB").save(site_dir / f"icon-{size}.png", "PNG")
+        log(f"Icône personnalisée utilisée : {src.name}")
+        return True
+    except Exception as e:  # noqa: BLE001
+        log(f"  ! icône personnalisée ignorée ({e}) : icône radar utilisée")
+        return False
 
 
 def build_summary(pea: list[Candidate], crypto: list[Candidate], page_url: str) -> str:
