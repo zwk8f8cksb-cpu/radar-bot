@@ -5,6 +5,9 @@ on:
   workflow_dispatch:
 permissions:
   contents: write
+concurrency:
+  group: radar
+  cancel-in-progress: false
 jobs:
   radar:
     runs-on: ubuntu-latest
@@ -24,4 +27,5 @@ jobs:
           git config user.email "radar-bot@users.noreply.github.com"
           git add docs
           git commit -m "Radar du jour" || exit 0
+          git pull --rebase -X theirs origin main
           git push
