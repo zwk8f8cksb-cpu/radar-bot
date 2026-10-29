@@ -36,6 +36,7 @@ from __future__ import annotations
 import argparse
 import calendar
 import datetime as dt
+import html
 import json
 import os
 import statistics
@@ -103,6 +104,7 @@ NEGATIVE = {
 
 UA = {"User-Agent": "radar-bot/1.0 (veille personnelle)"}
 OUT_DIR = Path(__file__).parent / "reports"
+SITE_DIR = Path(__file__).parent / "docs"   # page web publiée via GitHub Pages
 
 
 def log(msg: str) -> None:
@@ -562,6 +564,139 @@ def render_report(pea: list[Candidate], crypto: list[Candidate], themes: list[di
     return "\n".join(L)
 
 
+PAGE_CSS = """
+:root{--bg:#f6f7f9;--card:#fff;--text:#111827;--muted:#6b7280;--line:#e5e7eb;--up:#15803d;--down:#b91c1c;--warn:#b45309}
+@media (prefers-color-scheme:dark){:root{--bg:#0b0f14;--card:#141a22;--text:#e5e7eb;--muted:#9ca3af;--line:#243041;--up:#4ade80;--down:#f87171;--warn:#fbbf24}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:16px/1.45 -apple-system,system-ui,"Segoe UI",Roboto,sans-serif;padding:env(safe-area-inset-top) 0 env(safe-area-inset-bottom)}
+main{max-width:640px;margin:0 auto;padding:16px}
+h1{font-size:1.5rem;margin:8px 0 2px}
+.sub{color:var(--muted);font-size:.85rem}
+nav{display:flex;gap:8px;overflow-x:auto;margin:14px 0 4px;padding-bottom:4px}
+nav a{white-space:nowrap;text-decoration:none;color:var(--text);border:1px solid var(--line);background:var(--card);padding:6px 12px;border-radius:999px;font-size:.85rem}
+h2{font-size:1.1rem;margin:26px 0 8px;scroll-margin-top:12px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px;margin-bottom:10px}
+.top{display:flex;justify-content:space-between;align-items:flex-start;gap:12px}
+.name{font-weight:600}
+.sym{color:var(--muted);font-size:.8rem;font-weight:400}
+.score{font-size:1.7rem;font-weight:700;line-height:1;text-align:right;white-space:nowrap}
+.score small{font-size:.75rem;color:var(--muted);font-weight:500}
+.bar{height:6px;background:var(--line);border-radius:99px;margin:10px 0;overflow:hidden}
+.bar i{display:block;height:100%;border-radius:99px}
+.chips{display:flex;flex-wrap:wrap;gap:6px}
+.chip{font-size:.75rem;padding:2px 8px;border-radius:99px;border:1px solid var(--line);color:var(--muted)}
+.chip.up{color:var(--up)}.chip.down{color:var(--down)}
+.why{font-size:.88rem;margin:8px 0 0}
+.risk{font-size:.82rem;color:var(--warn);margin:6px 0 0}
+.news{font-size:.8rem;color:var(--muted);margin:6px 0 0}
+.note{font-size:.75rem;color:var(--muted);margin:4px 0 0}
+.empty{color:var(--muted);font-size:.9rem}
+footer{color:var(--muted);font-size:.78rem;margin:28px 0 12px}
+"""
+
+
+def _score_color(score: float) -> str:
+    return "#16a34a" if score >= 70 else "#d97706" if score >= 50 else "#6b7280"
+
+
+def _chip(label: str, val: float | None) -> str:
+    if val is None:
+        return ""
+    return f'<span class="chip {"up" if val >= 0 else "down"}">{label} {val:+.1f} %</span>'
+
+
+def _card_html(c: Candidate) -> str:
+    e = html.escape
+    chips = _chip("1 j", c.chg_1d) + _chip("7 j", c.chg_7d)
+    if c.vol_ratio:
+        chips += f'<span class="chip">volume ×{c.vol_ratio:.1f}</span>'
+    if c.mention_growth is not None and c.mentions_24h >= 5:
+        chips += f'<span class="chip">discussions ×{c.mention_growth:.1f}</span>'
+    if c.news_24h:
+        chips += f'<span class="chip">{c.news_24h} articles/24 h</span>'
+    out = [f'<div class="card"><div class="top"><div class="name">{e(c.name)} '
+           f'<span class="sym">{e(c.symbol)}</span></div>'
+           f'<div class="score" style="color:{_score_color(c.score)}">{c.score:.0f}<small>/100</small></div></div>',
+           f'<div class="bar"><i style="width:{c.score:.0f}%;background:{_score_color(c.score)}"></i></div>',
+           f'<div class="chips">{chips}</div>']
+    out.append(f'<p class="why">{e(" · ".join(c.reasons)) if c.reasons else "Pas de signal marqué aujourd’hui."}</p>')
+    if c.risks:
+        out.append(f'<p class="risk">⚠️ {e(" · ".join(c.risks))}</p>')
+    if c.headlines:
+        out.append(f'<p class="news">📰 {e(c.headlines[0])}</p>')
+    if c.note:
+        out.append(f'<p class="note">{e(c.note)}</p>')
+    out.append("</div>")
+    return "".join(out)
+
+
+def render_html(pea: list[Candidate], crypto: list[Candidate], themes: list[dict],
+                top: int, social: bool) -> str:
+    now = dt.datetime.now(dt.timezone.utc).strftime("%d/%m/%Y à %H:%M UTC")
+    sections: list[tuple[str, str, str]] = []
+
+    def block(anchor: str, title: str, items: list[Candidate]) -> None:
+        ranked = sorted(items, key=lambda c: c.score, reverse=True)[:top]
+        body = "".join(_card_html(c) for c in ranked) or '<p class="empty">Aucune donnée aujourd’hui.</p>'
+        sections.append((anchor, title, body))
+
+    if pea:
+        block("actions", "Actions européennes (PEA à vérifier)", [c for c in pea if c.kind == "action"])
+        block("etf", "ETF (éligibilité PEA à confirmer)", [c for c in pea if c.kind == "etf"])
+    if crypto:
+        block("crypto", "Cryptomonnaies", crypto)
+    if themes:
+        rows = []
+        for t in themes:
+            width = clip((t["growth"] - 1) / 3) * 100
+            sent = "" if t["sentiment"] is None else f' · sentiment {t["sentiment"]:+.2f}'
+            rows.append(
+                f'<div class="card"><div class="top"><div class="name">{html.escape(t["theme"])}</div>'
+                f'<div class="score" style="color:{_score_color(40 + width * 0.5)}">×{t["growth"]:.1f}</div></div>'
+                f'<div class="bar"><i style="width:{width:.0f}%;background:{_score_color(40 + width * 0.5)}"></i></div>'
+                f'<p class="note">{t["n24"]} articles en 24 h{sent}</p></div>')
+        sections.append(("themes", "Thèmes qui accélèrent", "".join(rows)))
+
+    nav = "".join(f'<a href="#{a}">{html.escape(t.split(" (")[0])}</a>' for a, t, _ in sections)
+    body = "".join(f'<h2 id="{a}">{html.escape(t)}</h2>{b}' for a, t, b in sections)
+    if not social:
+        src = "Signal réseaux sociaux désactivé."
+    elif not os.getenv("X_BEARER_TOKEN"):
+        src = "Discussions mesurées via Reddit uniquement (X non connecté)."
+    else:
+        src = "Discussions mesurées via Reddit et X."
+    return (
+        '<!doctype html><html lang="fr"><head><meta charset="utf-8">'
+        '<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">'
+        '<meta name="apple-mobile-web-app-capable" content="yes">'
+        '<meta name="apple-mobile-web-app-title" content="Radar">'
+        '<meta name="color-scheme" content="light dark">'
+        '<title>Radar des marchés</title>'
+        f'<style>{PAGE_CSS}</style></head><body><main>'
+        f'<h1>📡 Radar des marchés</h1><div class="sub">Mis à jour le {now}</div>'
+        f'<nav>{nav}</nav>{body}'
+        f'<footer>{html.escape(src)} Outil de repérage, pas un conseil en investissement : '
+        'un score élevé signale une attention inhabituelle, pas un gain garanti, et les pics de buzz '
+        'sont aussi le terrain des pumps coordonnés. Vérifie toujours l’éligibilité PEA.</footer>'
+        '</main></body></html>'
+    )
+
+
+def build_summary(pea: list[Candidate], crypto: list[Candidate], page_url: str) -> str:
+    def top3(items: list[Candidate]) -> list[str]:
+        return [f"• {c.name} : {c.score:.0f}/100" for c in
+                sorted(items, key=lambda c: c.score, reverse=True)[:3]]
+    L = [f"📡 Radar des marchés - {dt.date.today().strftime('%d/%m/%Y')}", ""]
+    for title, items in (("Actions PEA (à vérifier)", [c for c in pea if c.kind == "action"]),
+                         ("ETF", [c for c in pea if c.kind == "etf"]),
+                         ("Crypto", crypto)):
+        if items:
+            L += [title] + top3(items) + [""]
+    L.append(f"Détails : {page_url}")
+    L.append("Outil de repérage, pas un conseil en investissement.")
+    return "\n".join(L)
+
+
 def send_telegram(text: str) -> None:
     token, chat = os.getenv("TELEGRAM_BOT_TOKEN"), os.getenv("TELEGRAM_CHAT_ID")
     if not token or not chat:
@@ -619,8 +754,19 @@ def main() -> None:
     path.write_text(report, encoding="utf-8")
     print(report)
     log(f"\nRapport enregistré : {path}")
+
+    SITE_DIR.mkdir(exist_ok=True)
+    (SITE_DIR / "index.html").write_text(render_html(pea, crypto, themes, args.top, social),
+                                         encoding="utf-8")
+    log(f"Page web générée : {SITE_DIR / 'index.html'}")
+
     if args.send:
-        send_telegram(report)
+        repo = os.getenv("GITHUB_REPOSITORY", "")   # "pseudo/radar-bot" dans GitHub Actions
+        if "/" in repo:
+            owner, name = repo.split("/", 1)
+            send_telegram(build_summary(pea, crypto, f"https://{owner}.github.io/{name}/"))
+        else:
+            send_telegram(report)
 
 
 if __name__ == "__main__":
