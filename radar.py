@@ -38,10 +38,13 @@ import calendar
 import datetime as dt
 import html
 import json
+import math
 import os
 import statistics
+import struct
 import sys
 import time
+import zlib
 from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import quote_plus
@@ -671,6 +674,11 @@ def render_html(pea: list[Candidate], crypto: list[Candidate], themes: list[dict
         '<meta name="apple-mobile-web-app-capable" content="yes">'
         '<meta name="apple-mobile-web-app-title" content="Radar">'
         '<meta name="color-scheme" content="light dark">'
+        '<meta name="theme-color" content="#0b1220">'
+        '<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">'
+        '<link rel="manifest" href="manifest.webmanifest">'
+        '<link rel="apple-touch-icon" href="icon-180.png">'
+        '<link rel="icon" type="image/png" href="icon-192.png">'
         '<title>Radar des marchés</title>'
         f'<style>{PAGE_CSS}</style></head><body><main>'
         f'<h1>📡 Radar des marchés</h1><div class="sub">Mis à jour le {now}</div>'
@@ -678,8 +686,98 @@ def render_html(pea: list[Candidate], crypto: list[Candidate], themes: list[dict
         f'<footer>{html.escape(src)} Outil de repérage, pas un conseil en investissement : '
         'un score élevé signale une attention inhabituelle, pas un gain garanti, et les pics de buzz '
         'sont aussi le terrain des pumps coordonnés. Vérifie toujours l’éligibilité PEA.</footer>'
-        '</main></body></html>'
+        '</main><script>if("serviceWorker"in navigator){navigator.serviceWorker.register("sw.js").catch(function(){});}'
+        '</script></body></html>'
     )
+
+
+SERVICE_WORKER = """const CACHE = "radar-v1";
+self.addEventListener("install", (e) => {
+  e.waitUntil(caches.open(CACHE).then((c) => c.addAll(["./", "icon-192.png"])));
+  self.skipWaiting();
+});
+self.addEventListener("activate", (e) => {
+  e.waitUntil(caches.keys().then((keys) =>
+    Promise.all(keys.filter((k) => k !== CACHE).map((k) => caches.delete(k)))));
+  self.clients.claim();
+});
+// Réseau d'abord (toujours la version du jour), cache en secours hors connexion.
+self.addEventListener("fetch", (e) => {
+  if (e.request.method !== "GET") return;
+  e.respondWith(
+    fetch(e.request)
+      .then((r) => {
+        const copy = r.clone();
+        caches.open(CACHE).then((c) => c.put(e.request, copy));
+        return r;
+      })
+      .catch(() => caches.match(e.request).then((m) => m || caches.match("./")))
+  );
+});
+"""
+
+
+def _png_bytes(size: int, pixel) -> bytes:
+    raw = bytearray()
+    for y in range(size):
+        raw.append(0)
+        for x in range(size):
+            raw.extend(pixel(x, y))
+
+    def chunk(tag: bytes, data: bytes) -> bytes:
+        body = tag + data
+        return struct.pack(">I", len(data)) + body + struct.pack(">I", zlib.crc32(body) & 0xFFFFFFFF)
+
+    return (b"\x89PNG\r\n\x1a\n"
+            + chunk(b"IHDR", struct.pack(">IIBBBBB", size, size, 8, 2, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(bytes(raw), 9))
+            + chunk(b"IEND", b""))
+
+
+def radar_icon(size: int) -> bytes:
+    """Icône 'radar' dessinée sans dépendance : anneaux, balayage et points verts."""
+    green = (34, 197, 94)
+    half = size / 2
+
+    def mix(base, alpha):
+        return tuple(round(b + (g - b) * clip(alpha)) for b, g in zip(base, green))
+
+    def pixel(x, y):
+        dx, dy = (x + 0.5 - half) / half, (y + 0.5 - half) / half
+        r = math.hypot(dx, dy)
+        bg_t = clip(1 - r)
+        base = (round(11 + 8 * bg_t), round(18 + 14 * bg_t), round(32 + 22 * bg_t))
+        a = 0.0
+        for ring in (0.28, 0.54, 0.80):                       # anneaux
+            a = max(a, clip(1 - abs(r - ring) / 0.03) * 0.55)
+        a = max(a, clip(1 - (abs(dx) if abs(dy) < 0.80 else 9) / 0.012) * 0.18)  # axes
+        a = max(a, clip(1 - (abs(dy) if abs(dx) < 0.80 else 9) / 0.012) * 0.18)
+        ang = math.degrees(math.atan2(dy, dx))                 # balayage vers le haut à droite
+        if r < 0.80 and -75 <= ang <= -20:
+            a = max(a, 0.10 + 0.35 * (ang + 75) / 55)
+        for (bx, by, br) in ((0.38, -0.42, 0.075), (-0.32, 0.26, 0.05)):   # points détectés
+            d = math.hypot(dx - bx, dy - by)
+            a = max(a, clip((br - d) / 0.02 + 0.5))
+            a = max(a, clip(1 - (d - br) / 0.07) * 0.35)
+        return mix(base, a)
+
+    return _png_bytes(size, pixel)
+
+
+def write_pwa_files(site_dir: Path) -> None:
+    """Fichiers qui font de la page une 'application' : manifeste, icônes, mode hors connexion."""
+    manifest = {
+        "name": "Radar des marchés", "short_name": "Radar",
+        "start_url": "./", "scope": "./", "display": "standalone",
+        "background_color": "#0b1220", "theme_color": "#0b1220",
+        "icons": [{"src": "icon-192.png", "sizes": "192x192", "type": "image/png"},
+                  {"src": "icon-512.png", "sizes": "512x512", "type": "image/png"}],
+    }
+    (site_dir / "manifest.webmanifest").write_text(json.dumps(manifest, ensure_ascii=False, indent=2),
+                                                   encoding="utf-8")
+    (site_dir / "sw.js").write_text(SERVICE_WORKER, encoding="utf-8")
+    for size in (180, 192, 512):
+        (site_dir / f"icon-{size}.png").write_bytes(radar_icon(size))
 
 
 def build_summary(pea: list[Candidate], crypto: list[Candidate], page_url: str) -> str:
@@ -758,6 +856,7 @@ def main() -> None:
     SITE_DIR.mkdir(exist_ok=True)
     (SITE_DIR / "index.html").write_text(render_html(pea, crypto, themes, args.top, social),
                                          encoding="utf-8")
+    write_pwa_files(SITE_DIR)
     log(f"Page web générée : {SITE_DIR / 'index.html'}")
 
     if args.send:
