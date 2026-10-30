@@ -1,0 +1,7 @@
+{
+  "mine": ["AIR.PA", "BTC", "ETH"],
+  "equities_add": {},
+  "etfs_add": {},
+  "remove": [],
+  "alert_threshold": 80
+}
