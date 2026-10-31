@@ -1,7 +1,5 @@
 {
-  "mine": ["AIR.PA", "BTC", "ETH"],
-  "equities_add": {},
-  "etfs_add": {},
-  "remove": [],
+  "mine": ["TTE.PA", "SAN.PA"],
+  "price_alerts": {"TTE.PA": {"below": 55}},
   "alert_threshold": 80
 }
