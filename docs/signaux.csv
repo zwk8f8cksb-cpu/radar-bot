@@ -1,0 +1,7 @@
+﻿date;symbole;nom;type;score;prix_au_signal;dernier_prix;date_dernier_prix;variation_pct;repere_variation_pct
+2026-10-30;SAN.PA;Sanofi;action;87;79.73999786376953;76.1500015258789;2026-10-31;-4.5;
+2026-10-30;BTC;Bitcoin;crypto;76;68534;68998;2026-10-31;0.68;
+2026-10-30;PEPE;Pepe;crypto;82;4.4e-06;4.5e-06;2026-10-31;2.27;
+2026-10-31;SAN.PA;Sanofi;action;74;nan;76.1500015258789;2026-10-31;nan;
+2026-10-31;BTC;Bitcoin;crypto;76;69037;68998;2026-10-31;-0.06;
+2026-10-31;PEPE;Pepe;crypto;75;4.55e-06;4.5e-06;2026-10-31;-1.1;
