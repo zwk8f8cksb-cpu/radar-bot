@@ -163,6 +163,8 @@ class Candidate:
     spark: list[float] = field(default_factory=list)   # cours des 30 derniers jours
     delta: float | None = None     # évolution du score vs mise à jour précédente
     mine: bool = False             # fait partie de « Mes valeurs »
+    breakdown: list[dict] = field(default_factory=list)   # points par composante
+    missing: list[str] = field(default_factory=list)
     market_cap: float | None = None
     trending: bool = False
     risk_penalty: float = 0.0
@@ -530,6 +532,20 @@ def compute_score(c: Candidate) -> None:
     wsum = sum(WEIGHTS[k] for k in comps)
     base = sum(WEIGHTS[k] * v for k, v in comps.items()) / wsum * 100 if wsum else 0
     c.components = comps
+    labels = {"volume": "Volume anormal", "mentions": "Discussions", "news": "Actualité", "momentum": "Momentum"}
+    sent = f", sentiment {c.sentiment:+.1f}" if c.sentiment is not None else ""
+    earn = f", résultats le {c.earnings_soon}" if c.earnings_soon else ""
+    details = {
+        "volume": f"volume ×{c.vol_ratio:.1f} vs moyenne 30 j" if c.vol_ratio is not None else "",
+        "mentions": (f"discussions ×{c.mention_growth:.1f} ({c.mentions_24h} posts/24 h)"
+                     if c.mention_growth is not None else ""),
+        "news": f"{c.news_24h} articles/24 h{sent}{earn}",
+        "momentum": f"{c.chg_7d:+.1f} % sur 7 jours" if c.chg_7d is not None else "",
+    }
+    c.breakdown = [{"label": labels[k], "detail": details[k],
+                    "pts": WEIGHTS[k] * v / wsum * 100 if wsum else 0.0,
+                    "max": WEIGHTS[k] / wsum * 100 if wsum else 0.0} for k, v in comps.items()]
+    c.missing = [labels[k] for k in WEIGHTS if k not in comps]
     c.score = round(clip(base - min(c.risk_penalty, MAX_RISK_PENALTY), 0, 100))
 
 
@@ -646,6 +662,20 @@ h2{font-size:1.1rem;margin:26px 0 8px;scroll-margin-top:12px}
 .empty{color:var(--muted);font-size:.9rem}
 footer{color:var(--muted);font-size:.78rem;margin:28px 0 12px}
 [hidden]{display:none!important}
+summary{list-style:none;cursor:pointer;-webkit-tap-highlight-color:transparent}
+summary::-webkit-details-marker{display:none}
+.chev{display:inline-block;color:var(--muted);font-size:.75rem;margin-left:4px;transition:transform .15s}
+details[open] .chev{transform:rotate(180deg)}
+.detail{margin-top:8px;border-top:1px solid var(--line);padding-top:6px}
+.price .up{color:var(--up)}.price .down{color:var(--down)}
+.search{width:100%;font:inherit;font-size:16px;color:var(--text);background:var(--card);border:1px solid var(--line);border-radius:12px;padding:9px 12px;margin:10px 0 0}
+.explain{margin:10px 0 0;padding:10px;border:1px solid var(--line);border-radius:10px}
+.exh{font-size:.82rem;font-weight:600;margin:0 0 6px}
+.bk{margin-bottom:8px}
+.bkh{display:flex;justify-content:space-between;font-size:.82rem}
+.bkd{font-size:.76rem;color:var(--muted)}
+.bar.sm{height:4px;margin:3px 0}
+.bar.sm i{background:var(--muted)}
 .scorebox{text-align:right}
 .delta{font-size:.75rem;font-weight:600;margin-top:2px}
 .delta.up{color:var(--up)}.delta.down{color:var(--down)}
@@ -665,25 +695,40 @@ footer{color:var(--muted);font-size:.78rem;margin:28px 0 12px}
 
 
 PAGE_FILTERS = (
+    '<input id="q" class="search" type="search" placeholder="Rechercher (Airbus, BTC…)" '
+    'autocomplete="off" autocapitalize="off" enterkeyhint="search" aria-label="Rechercher une valeur">'
     '<div class="filters"><button data-f="all" class="on">Tout</button>'
     '<button data-f="action">Actions</button><button data-f="etf">ETF</button>'
-    '<button data-f="crypto">Crypto</button><button data-f="hot">Score ≥ 70</button></div>')
+    '<button data-f="crypto">Crypto</button><button data-f="hot">Score ≥ 70</button>'
+    '<button id="toggle" type="button">Tout déplier</button></div>')
 
 PAGE_JS = """(function(){
 if("serviceWorker"in navigator){navigator.serviceWorker.register("sw.js").catch(function(){});}
-var btns=document.querySelectorAll(".filters button");
-function apply(f){
-  btns.forEach(function(b){b.classList.toggle("on",b.dataset.f===f);});
+var btns=document.querySelectorAll(".filters button[data-f]");
+var qi=document.getElementById("q"),tg=document.getElementById("toggle");
+var cur="all",expanded=false;
+function apply(){
+  var q=(qi.value||"").trim().toLowerCase(),hits=[];
+  btns.forEach(function(b){b.classList.toggle("on",b.dataset.f===cur);});
   document.querySelectorAll(".card[data-kind]").forEach(function(c){
-    var show=f==="all"||(f==="hot"?Number(c.dataset.score)>=70:c.dataset.kind===f);
-    c.hidden=!show;
+    var ok=cur==="all"||(cur==="hot"?Number(c.dataset.score)>=70:c.dataset.kind===cur);
+    if(ok&&q&&c.dataset.search.indexOf(q)<0){ok=false;}
+    c.hidden=!ok;
+    if(ok&&q){hits.push(c);}
   });
+  if(q&&hits.length<=3){hits.forEach(function(c){c.querySelector("details").open=true;});}
   document.querySelectorAll("section[data-sec]").forEach(function(s){
     if(s.querySelector(".card[data-kind]")){s.hidden=!s.querySelector(".card[data-kind]:not([hidden])");}
-    else{s.hidden=f!=="all";}
+    else{s.hidden=(cur!=="all"||q!=="");}
   });
 }
-btns.forEach(function(b){b.addEventListener("click",function(){apply(b.dataset.f);});});
+btns.forEach(function(b){b.addEventListener("click",function(){cur=b.dataset.f;apply();});});
+qi.addEventListener("input",apply);
+tg.addEventListener("click",function(){
+  expanded=!expanded;
+  document.querySelectorAll(".card[data-kind] details").forEach(function(d){d.open=expanded;});
+  tg.textContent=expanded?"Tout replier":"Tout déplier";
+});
 })();"""
 
 
@@ -759,6 +804,24 @@ def _bilan_html(b: dict | None) -> str:
             'ce bilan indique une tendance, pas une preuve de fiabilité.</p></div>')
 
 
+def _breakdown_html(c: Candidate) -> str:
+    if not c.breakdown:
+        return ""
+    e = html.escape
+    rows = "".join(
+        f'<div class="bk"><div class="bkh"><span>{e(b["label"])}</span><span>{b["pts"]:.0f} / {b["max"]:.0f}</span></div>'
+        f'<div class="bar sm"><i style="width:{(b["pts"] / b["max"] * 100 if b["max"] else 0):.0f}%"></i></div>'
+        f'<div class="bkd">{e(b["detail"])}</div></div>' for b in c.breakdown)
+    pen = min(c.risk_penalty, MAX_RISK_PENALTY)
+    if pen:
+        rows += (f'<div class="bk"><div class="bkh"><span>Pénalité de risque</span><span>−{pen:.0f}</span></div>'
+                 f'<div class="bkd">{e(" · ".join(c.risks))}</div></div>')
+    miss = (f' Non mesuré : {e(", ".join(c.missing))} (les points sont répartis sur les autres éléments).'
+            if c.missing else "")
+    return (f'<div class="explain"><p class="exh">Comment ce score est calculé</p>{rows}'
+            f'<p class="note">Score = somme des points − pénalité de risque.{miss}</p></div>')
+
+
 def _card_html(c: Candidate) -> str:
     e = html.escape
     chips = _chip("1 j", c.chg_1d) + _chip("7 j", c.chg_7d)
@@ -770,21 +833,30 @@ def _card_html(c: Candidate) -> str:
         chips += f'<span class="chip">{c.news_24h} articles/24 h</span>'
     if c.earnings_date:
         chips += f'<span class="chip">résultats {dt.date.fromisoformat(c.earnings_date).strftime("%d/%m")}</span>'
-    price = f'<div class="price">{e(fmt_price(c))}</div>' if c.price is not None else ""
-    out = [f'<div class="card" data-kind="{c.kind}" data-score="{c.score:.0f}"><div class="top"><div><div class="name">{e(c.name)} '
-           f'<span class="sym">{e(c.symbol)}</span></div>{price}</div>'
-           f'<div class="scorebox"><div class="score" style="color:{_score_color(c.score)}">{c.score:.0f}<small>/100</small></div>{_delta_html(c)}</div></div>',
-           f'<div class="bar"><i style="width:{c.score:.0f}%;background:{_score_color(c.score)}"></i></div>',
-           _spark_svg(c.spark),
-           f'<div class="chips">{chips}</div>']
-    out.append(f'<p class="why">{e(" · ".join(c.reasons)) if c.reasons else "Pas de signal marqué aujourd’hui."}</p>')
+    color = _score_color(c.score)
+    price = e(fmt_price(c)) if c.price is not None else ""
+    day = ""
+    if c.chg_1d is not None:
+        day = f'<span class="{"up" if c.chg_1d >= 0 else "down"}">{c.chg_1d:+.1f} %</span>'
+    price_line = f'<div class="price">{price}{" · " if price and day else ""}{day}</div>' if (price or day) else ""
+    search = e(f"{c.name} {c.symbol}".lower(), quote=True)
+    why = e(" · ".join(c.reasons)) if c.reasons else "Pas de signal marqué aujourd’hui."
+    out = [
+        f'<div class="card" data-kind="{c.kind}" data-score="{c.score:.0f}" data-search="{search}"><details><summary>',
+        f'<div class="top"><div><div class="name">{e(c.name)} <span class="sym">{e(c.symbol)}</span>'
+        f'<span class="chev">▾</span></div>{price_line}</div>',
+        f'<div class="scorebox"><div class="score" style="color:{color}">{c.score:.0f}<small>/100</small></div>'
+        f'{_delta_html(c)}</div></div>',
+        f'<div class="bar"><i style="width:{c.score:.0f}%;background:{color}"></i></div></summary>',
+        '<div class="detail">', _spark_svg(c.spark), f'<div class="chips">{chips}</div>',
+        f'<p class="why">{why}</p>',
+    ]
     if c.risks:
         out.append(f'<p class="risk">⚠️ {e(" · ".join(c.risks))}</p>')
-    out.append(_sources_html(c.sources))
-    out.append(_links_html(c))
+    out += [_breakdown_html(c), _sources_html(c.sources), _links_html(c)]
     if c.note:
         out.append(f'<p class="note">{e(c.note)}</p>')
-    out.append("</div>")
+    out.append("</div></details></div>")
     return "".join(out)
 
 
