@@ -728,6 +728,13 @@ h2{font-size:1.1rem;margin:26px 0 8px;scroll-margin-top:12px}
 .empty{color:var(--muted);font-size:.9rem}
 footer{color:var(--muted);font-size:.78rem;margin:28px 0 12px}
 [hidden]{display:none!important}
+.fresh{display:inline-block;font-size:.78rem;padding:1px 8px;border-radius:99px;border:1px solid var(--line);margin-left:4px}
+.fresh.ok{color:var(--up)}.fresh.mid{color:var(--warn)}.fresh.old{color:var(--down)}
+.live{margin-top:10px}
+.live button{font:inherit;font-size:.85rem;color:var(--text);background:var(--card);border:1px solid var(--line);border-radius:12px;padding:8px 12px;width:100%;text-align:left}
+.lv{display:flex;justify-content:space-between;gap:10px;align-items:center;padding:8px 0;border-bottom:1px solid var(--line);font-size:.88rem}
+.lv a{color:var(--text);text-decoration:none;font-weight:600}
+.lv small{display:block;color:var(--muted);font-weight:400}
 .star{color:#d4a017;margin-left:4px;font-size:.85rem}
 .tools{margin-top:10px;display:flex;flex-direction:column;gap:8px}
 .fav{font:inherit;font-size:.85rem;align-self:flex-start;color:var(--text);background:var(--card);border:1px solid var(--line);border-radius:99px;padding:5px 12px}
@@ -778,7 +785,8 @@ PAGE_FILTERS = (
     '<button data-f="fav">★ Favoris</button>'
     '<button data-f="action">Actions</button><button data-f="etf">ETF</button>'
     '<button data-f="crypto">Crypto</button><button data-f="hot">Score ≥ 70</button>'
-    '<button id="toggle" type="button">Tout déplier</button></div>')
+    '<button id="toggle" type="button">Tout déplier</button></div>'
+    '<div class="live"><button id="livebtn" type="button" hidden></button><div id="live" class="card" hidden></div></div>')
 
 PAGE_JS = """(function(){
 if("serviceWorker"in navigator){navigator.serviceWorker.register("sw.js").catch(function(){});}
@@ -825,7 +833,48 @@ document.querySelectorAll(".card[data-sym]").forEach(function(c){
   });}
 });
 btns.forEach(function(b){b.addEventListener("click",function(){cur=b.dataset.f;apply();});});
-qi.addEventListener("input",apply);
+var lb=document.getElementById("livebtn"),lv=document.getElementById("live");
+function mk(tag,cls,txt){var e=document.createElement(tag);if(cls){e.className=cls;}if(txt!==undefined){e.textContent=txt;}return e;}
+function cg(path){return fetch("https://api.coingecko.com/api/v3"+path).then(function(r){if(!r.ok){throw new Error("http");}return r.json();});}
+function pct(v){return (v===null||v===undefined)?"n/d":(v>=0?"+":"")+v.toFixed(1)+" %";}
+function show(msg){lv.textContent="";lv.appendChild(mk("p","note",msg));lv.hidden=false;}
+function liveSearch(q){
+  show("Recherche en cours…");
+  cg("/search?query="+encodeURIComponent(q)).then(function(d){
+    var ids=(d.coins||[]).slice(0,6).map(function(c){return c.id;});
+    if(!ids.length){show("Aucune crypto trouvée.");return null;}
+    return cg("/coins/markets?vs_currency=eur&ids="+encodeURIComponent(ids.join(","))+"&price_change_percentage=24h,7d");
+  }).then(function(rows){
+    if(!rows){return;}
+    lv.textContent="";
+    rows.forEach(function(c){
+      var row=mk("div","lv"),left=mk("div"),a=mk("a","",c.name+" ("+String(c.symbol).toUpperCase()+")");
+      a.href="https://www.coingecko.com/en/coins/"+encodeURIComponent(c.id);a.target="_blank";a.rel="noopener noreferrer";
+      left.appendChild(a);
+      left.appendChild(mk("small","","Capitalisation : "+(c.market_cap?Math.round(c.market_cap/1e6).toLocaleString("fr-FR")+" M€":"n/d")));
+      var right=mk("div");right.style.textAlign="right";
+      right.appendChild(mk("div","",c.current_price!==null?c.current_price.toLocaleString("fr-FR",{maximumSignificantDigits:6})+" €":"n/d"));
+      right.appendChild(mk("small","","24 h "+pct(c.price_change_percentage_24h_in_currency)+" · 7 j "+pct(c.price_change_percentage_7d_in_currency)));
+      row.appendChild(left);row.appendChild(right);lv.appendChild(row);
+    });
+    lv.appendChild(mk("p","note","Données CoinGecko, sans score. Un cours seul ne dit pas si une crypto est fiable."));
+    lv.hidden=false;
+  }).catch(function(){show("Recherche indisponible pour le moment (limite de requêtes ou connexion). Réessaie dans une minute.");});
+}
+qi.addEventListener("input",function(){
+  apply();
+  var q=(qi.value||"").trim();
+  lv.hidden=true;
+  if(q.length>=2){lb.hidden=false;lb.textContent="Chercher « "+q+" » parmi toutes les cryptos";}else{lb.hidden=true;}
+});
+lb.addEventListener("click",function(){liveSearch((qi.value||"").trim());});
+var fr=document.getElementById("fresh");
+if(fr){
+  var nx=Date.parse(fr.dataset.next),late=(Date.now()-nx)/3600000;
+  if(late<0){fr.className="fresh ok";fr.textContent="● à jour · prochaine vers "+fr.dataset.label;}
+  else if(late<2){fr.className="fresh mid";fr.textContent="● mise à jour attendue";}
+  else{fr.className="fresh old";fr.textContent="● en retard d’environ "+Math.round(late)+" h";}
+}
 tg.addEventListener("click",function(){
   expanded=!expanded;
   document.querySelectorAll(".card[data-kind] details").forEach(function(d){d.open=expanded;});
@@ -1020,6 +1069,9 @@ def render_html(pea: list[Candidate], crypto: list[Candidate], themes: list[dict
     ctx = ctx or {}
     paris = dt.datetime.now(PARIS)
     now = paris.strftime("%d/%m/%Y à %H:%M") + " (heure de Paris)"
+    nxt = next_slot(paris)
+    fresh = (f'<span id="fresh" class="fresh" data-next="{nxt.astimezone(dt.timezone.utc).isoformat(timespec="seconds")}" '
+             f'data-label="{nxt:%Hh%M}"></span>')
     weekend = ("<p class=\"note\">Week-end : les marchés actions sont fermés, les cours affichés sont ceux de la "
                "dernière séance. Les cryptos sont suivies en continu.</p>") if paris.weekday() >= 5 else ""
     sections: list[tuple[str, str, str]] = []
@@ -1134,7 +1186,7 @@ def render_html(pea: list[Candidate], crypto: list[Candidate], themes: list[dict
         '<link rel="icon" type="image/png" href="icon-192.png">'
         '<title>Radar des marchés</title>'
         f'<style>{PAGE_CSS}</style></head><body><main>'
-        f'<h1>📡 Radar des marchés</h1><div class="sub">Mis à jour le {now}</div>{weekend}'
+        f'<h1>📡 Radar des marchés</h1><div class="sub">Mis à jour le {now} {fresh}</div>{weekend}'
         f'<nav>{nav}</nav>{fng_html}{PAGE_FILTERS}{body}'
         f'<footer>{html.escape(src)} Outil de repérage, pas un conseil en investissement : '
         'un score élevé signale une attention inhabituelle, pas un gain garanti, et les pics de buzz '
@@ -1468,6 +1520,37 @@ def build_weekly(hist: dict, bilan: dict) -> str:
     return "\n".join(L)
 
 
+SLOTS = [(7, 30), (11, 30), (16, 30)]     # tranches de mise à jour (heure de Paris)
+
+
+def _slot_times(now: dt.datetime, days: tuple[int, ...]) -> list[dt.datetime]:
+    out = []
+    for d in days:
+        day = now.date() + dt.timedelta(days=d)
+        out += [dt.datetime(day.year, day.month, day.day, h, m, tzinfo=PARIS) for h, m in SLOTS]
+    return out
+
+
+def latest_slot(now: dt.datetime) -> dt.datetime:
+    return max(t for t in _slot_times(now, (-1, 0)) if t <= now)
+
+
+def next_slot(now: dt.datetime) -> dt.datetime:
+    return min(t for t in _slot_times(now, (0, 1)) if t > now)
+
+
+def is_due(hist: dict, now: dt.datetime) -> tuple[bool, dt.datetime]:
+    """Une mise à jour est due si la dernière date d'avant la tranche (7h30, 11h30, 16h30) écoulée."""
+    slot = latest_slot(now)
+    try:
+        last = dt.datetime.fromisoformat(hist["last"]["t"])
+        if last.tzinfo is None:
+            last = last.replace(tzinfo=PARIS)
+    except Exception:  # noqa: BLE001
+        return True, slot
+    return last < slot, slot
+
+
 def page_url() -> str:
     repo = os.getenv("GITHUB_REPOSITORY", "")
     return f"https://{repo.split('/')[0]}.github.io/{repo.split('/')[1]}/" if "/" in repo else ""
@@ -1525,7 +1608,17 @@ def main() -> None:
     ap.add_argument("--only", choices=["pea", "crypto", "themes"], help="limite à une section")
     ap.add_argument("--send", action="store_true", help="envoie le rapport sur Telegram")
     ap.add_argument("--no-alerts", action="store_true", help="désactive les alertes Telegram")
+    ap.add_argument("--auto", action="store_true",
+                    help="mode planifié : ne met à jour que si une tranche (7h30, 11h30, 16h30) est due")
     args = ap.parse_args()
+
+    if args.auto:
+        due, slot = is_due(load_history(), dt.datetime.now(PARIS))
+        if not due:
+            log("Aucune mise à jour due pour l'instant : rien à faire.")
+            return
+        args.send = (slot.hour, slot.minute) == SLOTS[0]    # Telegram : seulement la tranche du matin
+        log(f"Tranche {slot:%Hh%M} due : mise à jour lancée.")
 
     load_watchlist()
     social = not args.no_social
